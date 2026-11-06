@@ -12,8 +12,6 @@ COPY . .
 RUN poetry config virtualenvs.create false && \
     poetry install --extras "cpu cli" --without dev
 
-RUN rembg d bria-rmbg
-
+# Model weights are downloaded on first use and persisted in the named volume.
 EXPOSE 7000
-ENTRYPOINT ["rembg"]
-CMD ["s", "--host", "0.0.0.0", "--port", "7000", "--no-ui"]
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "7000"]
