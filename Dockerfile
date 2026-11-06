@@ -1,19 +1,15 @@
 FROM python:3.11-slim
 
-WORKDIR /rembg
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
 
-RUN pip install --upgrade pip && \
-    pip install poetry poetry-dynamic-versioning
+WORKDIR /app
 
-RUN apt-get update && apt-get install -y curl git && apt-get clean && rm -rf /var/lib/apt/lists/*
+COPY requirements-backend.txt .
+RUN pip install --upgrade pip && pip install -r requirements-backend.txt
 
-COPY . .
-
-RUN poetry config virtualenvs.create false && \
-    poetry install --extras "cpu cli" --without dev
-
-RUN rembg d bria-rmbg
+COPY server.py .
 
 EXPOSE 7000
-ENTRYPOINT ["rembg"]
-CMD ["--help"]
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "7000"]

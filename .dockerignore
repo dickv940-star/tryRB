@@ -1,7 +1,7 @@
+# Send only the files required to build the tryRB API image.
 *
-!rembg
-!pyproject.toml
-!poetry.lock
+!Dockerfile
+!server.py
+!requirements-backend.txt
 !README.md
-!.git
-.env
+!LICENSE.txt

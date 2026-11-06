@@ -19,7 +19,7 @@ except Exception:
     pass
 
 a = Analysis(
-    ['rembg.py'],
+    ['rembg_cli.py'],
     pathex=[],
     binaries=binaries,
     datas=datas,
