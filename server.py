@@ -11,8 +11,6 @@ from fastapi.responses import JSONResponse, Response
 from PIL import Image, UnidentifiedImageError
 from starlette.concurrency import run_in_threadpool
 
-from rembg import new_session, remove
-from rembg.sessions import sessions_names
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("tryrb")
@@ -32,8 +30,6 @@ ALLOWED_ORIGINS = [
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", "25000000"))
 MAX_PIXELS = int(os.getenv("MAX_IMAGE_PIXELS", "50000000"))
 ALLOWED_MODELS = {"birefnet-general", "birefnet-portrait", "bria-rmbg"}
-available_models = set(sessions_names)
-ALLOWED_MODELS &= available_models
 
 app = FastAPI(title="tryRB private background-removal API", version="1.0.0")
 app.add_middleware(
@@ -61,6 +57,9 @@ def process_image(
     decontaminate: bool,
     vitmatte: bool,
 ) -> bytes:
+    # Import rembg only when the first image is processed; API startup stays light.
+    from rembg import new_session, remove
+
     session = model_sessions.get(model_name)
     if session is None:
         session = new_session(model_name)
