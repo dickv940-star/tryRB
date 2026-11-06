@@ -1,0 +1,2 @@
+# CPU-only backend. The model weights download on first use.
+rembg[cpu,cli]>=2.0.66,<3.0.0
