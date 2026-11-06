@@ -1,5 +1,5 @@
 # CPU-only backend. Model weights download on first use and are cached in the Docker volume.
-rembg[cpu]>=2.0.66,<3.0.0
+rembg[cpu]==2.0.86,<3.0.0
 fastapi>=0.115,<1.0
 uvicorn[standard]>=0.30,<1.0
 python-multipart>=0.0.9,<0.1
