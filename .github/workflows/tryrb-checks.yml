@@ -57,6 +57,7 @@ jobs:
           Path("/tmp/tryrb-frontend.mjs").write_text(match.group(1), encoding="utf-8")
           PY
           node --check /tmp/tryrb-frontend.mjs
+          node --check birefnet-worker.js
 
       - name: Build backend Docker image
         run: docker build -t tryrb-api:ci .
