@@ -122,7 +122,28 @@ async def remove_background(
         logger.exception("Background removal failed")
         raise HTTPException(status_code=500, detail="Pemrosesan gagal. Periksa log backend.")
 
-    return Response(content=output, media_type="image/png")
+    # Reject unexpected resizing or non-PNG output; never silently downscale.
+    try:
+        with Image.open(io.BytesIO(content)) as source_image:
+            original_size = source_image.size
+        with Image.open(io.BytesIO(output)) as output_image:
+            if output_image.format != "PNG" or output_image.size != original_size:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Output bukan PNG atau resolusinya berubah; unduhan dibatalkan.",
+                )
+    except (UnidentifiedImageError, OSError):
+        raise HTTPException(status_code=500, detail="Backend menghasilkan PNG yang tidak valid.")
+
+    return Response(
+        content=output,
+        media_type="image/png",
+        headers={
+            "X-Image-Width": str(original_size[0]),
+            "X-Image-Height": str(original_size[1]),
+            "X-Image-Format": "PNG-lossless",
+        },
+    )
 
 
 @app.exception_handler(HTTPException)
