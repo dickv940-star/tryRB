@@ -28,15 +28,21 @@ button,input,select{font:inherit}button{cursor:pointer;border:1px solid var(--li
 <aside class="side">
  <h3>Pengaturan pemrosesan</h3>
  <div class="group"><label for="engine">Mesin AI</label><select id="engine" class="select"><option value="browser">AI di browser (tanpa API key)</option><option value="server">Server rembg sendiri (opsional)</option></select><div class="hint">Mode browser mengunduh model AI saat pertama kali digunakan.</div></div>
- <div class="group hidden" id="serverGroup"><label for="serverUrl">Alamat API rembg</label><input id="serverUrl" type="url" placeholder="https://alamat-server-anda"><div class="hint">Server harus mengizinkan CORS dari domain GitHub Pages.</div></div>
+ <div class="group hidden" id="serverGroup"><label for="serverUrl">Alamat API rembg</label><input id="serverUrl" type="url" placeholder="https://alamat-server-anda"><div class="hint">Contoh: https://server-anda.example. Gunakan HTTPS dan batasi akses server Anda.</div>
+ <div class="group" style="margin-top:14px"><label for="serverModel">Model server</label><select id="serverModel" class="select"><option value="birefnet-general">BiRefNet General · objek umum</option><option value="birefnet-portrait">BiRefNet Portrait · manusia/rambut</option><option value="bria-rmbg">BRIA RMBG · model besar</option></select></div>
+ <label style="display:flex;gap:8px;align-items:center;font-size:12px;margin:12px 0"><input id="decontaminate" type="checkbox" checked> Bersihkan halo warna lama (disarankan)</label>
+ <label style="display:flex;gap:8px;align-items:center;font-size:12px;margin:12px 0"><input id="vitmatte" type="checkbox"> Detail tepi rambut ViTMatte (lebih lambat)</label>
+ <label style="display:flex;gap:8px;align-items:center;font-size:12px;margin:12px 0"><input id="alphaMatting" type="checkbox"> Alpha matting (pemrosesan tambahan)</label>
+ <div class="hint">ViTMatte memerlukan model/dependensi tambahan di server. Aktifkan hanya jika backend sudah menyiapkannya. Alpha matting dan decontamination tidak digabungkan karena decontamination diabaikan saat alpha matting aktif.</div>
+ </div>
  <div class="group"><label for="bgColor">Warna latar pratinjau</label><div class="color-row"><input id="bgColor" type="color" value="#ffffff"><span id="colorName" class="small">#FFFFFF</span></div><div class="swatches"><button class="swatch" data-color="#ffffff" style="background:#fff" aria-label="Putih"></button><button class="swatch" data-color="#e8edf5" style="background:#e8edf5" aria-label="Abu muda"></button><button class="swatch" data-color="#d9e8ff" style="background:#d9e8ff" aria-label="Biru muda"></button><button class="swatch" data-color="#111827" style="background:#111827" aria-label="Gelap"></button><button class="swatch" data-color="#e8d8c5" style="background:#e8d8c5" aria-label="Krem"></button></div></div>
  <div class="actions"><button class="primary" id="processBtn" disabled>Hapus background</button><button id="downloadPng" disabled>Unduh PNG transparan</button><button id="downloadJpg" disabled>Unduh JPG dengan warna latar</button><button id="resetBtn" disabled>Ganti foto</button></div>
  <div class="progress" id="progress"><i id="progressBar"></i></div><div class="hint" id="progressLabel"></div>
- <div class="notice">Catatan: kualitas tepi rambut dipengaruhi kualitas foto dan model segmentasi. Hasil belum otomatis setara PhotoRoom; bandingkan beberapa foto sebelum dipakai untuk produksi.</div>
+ <div class="notice">Mode browser cocok untuk uji cepat. Untuk mengurangi halo pada rambut, gunakan server rembg dengan decontamination. ViTMatte dapat membantu detail tepi lembut, tetapi lebih berat dan perlu model tambahan. Hasil tetap perlu diuji pada foto nyata.</div>
 </aside>
 </main>
 <input class="file" id="fileInput" type="file" accept="image/png,image/jpeg,image/webp">
-<p class="foot">tryRB · Pemrosesan lokal di perangkat untuk mode browser. Foto tidak dikirim ke server oleh mode ini.</p>
+<p class="foot">tryRB · Mode browser memproses foto di perangkat. Mode server mengirim foto ke alamat backend yang Anda masukkan.</p>
 </div>
 <script type="module">
 const $=id=>document.getElementById(id);
@@ -57,9 +63,11 @@ async function browserRemove(file){
 }
 async function serverRemove(file){
  const base=$('serverUrl').value.trim().replace(/\/$/,'');if(!base)throw new Error('Masukkan alamat server rembg terlebih dahulu.');
- const body=new FormData();body.append('file',file,file.name);
- const response=await fetch(base+'/api/remove',{method:'POST',body});if(!response.ok)throw new Error('Server rembg merespons HTTP '+response.status+'. Periksa endpoint dan CORS.');
- return await response.blob();
+ const body=new FormData();body.append('file',file,file.name);body.append('model',$('serverModel').value);
+ const useAlpha=$('alphaMatting').checked;body.append('a',String(useAlpha));body.append('dc',String($('decontaminate').checked&&!useAlpha));body.append('vm',String($('vitmatte').checked));
+ progress(12,'Mengirim foto ke server rembg…');
+ const response=await fetch(base+'/api/remove',{method:'POST',body});if(!response.ok){const detail=await response.text().catch(()=> '');throw new Error('Server rembg HTTP '+response.status+'. '+detail.slice(0,220));}
+ progress(90,'Server menyelesaikan segmentasi dan perbaikan tepi…');return await response.blob();
 }
 $('processBtn').onclick=async()=>{if(!sourceFile)return;const button=$('processBtn');button.disabled=true;$('downloadPng').disabled=true;$('downloadJpg').disabled=true;startedAt=performance.now();resultBlob=null;setStatus('Menyiapkan mesin AI…');progress(2,'Menyiapkan pemrosesan…');try{resultBlob=$('engine').value==='server'?await serverRemove(sourceFile):await browserRemove(sourceFile);if(!resultBlob||!resultBlob.type.includes('image'))throw new Error('Model tidak menghasilkan file gambar yang valid.');if(resultUrl)URL.revokeObjectURL(resultUrl);resultUrl=URL.createObjectURL(resultBlob);$('preview').src=resultUrl;$('preview').style.background=$('bgColor').value;$('downloadPng').disabled=false;$('downloadJpg').disabled=false;progress(100,'Selesai');const seconds=((performance.now()-startedAt)/1000).toFixed(1);$('statusTime').textContent=seconds+' dtk';setStatus('Background berhasil diproses · periksa detail tepi rambut',true)}catch(err){console.error(err);setStatus('Gagal: '+(err?.message||String(err)));progress(0,'Coba lagi, atau gunakan server rembg sendiri.')}finally{button.disabled=false}};
 $('downloadPng').onclick=()=>{if(!resultBlob)return;const a=document.createElement('a');a.href=resultUrl;a.download=(sourceFile.name.replace(/\.[^.]+$/,'')||'tryrb')+'-transparent.png';a.click()};
