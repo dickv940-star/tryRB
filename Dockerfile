@@ -16,4 +16,4 @@ RUN rembg d bria-rmbg
 
 EXPOSE 7000
 ENTRYPOINT ["rembg"]
-CMD ["--help"]
+CMD ["s", "--host", "0.0.0.0", "--port", "7000", "--no-ui"]
