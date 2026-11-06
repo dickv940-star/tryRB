@@ -58,52 +58,84 @@ $('engine').onchange=()=>{$('serverGroup').classList.toggle('hidden',$('engine')
 $('bgColor').oninput=()=>{$('colorName').textContent=$('bgColor').value.toUpperCase();if(resultUrl){$('preview').style.background=$('bgColor').value}};
 document.querySelectorAll('[data-color]').forEach(b=>b.onclick=()=>{$('bgColor').value=b.dataset.color;$('bgColor').dispatchEvent(new Event('input'))});
 let browserEngineInfo='';
-async function browserRemove(file){
+let birefnetWorker=null, birefnetWorkerUrl=null, birefnetRequestId=0;
+const birefnetPending=new Map();
+function stopBirefnetWorker(error){
+ if(birefnetWorker){birefnetWorker.terminate();birefnetWorker=null;}
+ if(birefnetWorkerUrl){URL.revokeObjectURL(birefnetWorkerUrl);birefnetWorkerUrl=null;}
+ for(const pending of birefnetPending.values()) pending.reject(error||new Error('Worker BiRefNet dihentikan.'));
+ birefnetPending.clear();
+}
+function ensureBirefnetWorker(){
+ if(birefnetWorker)return;
+ if(!('Worker' in window)||!('OffscreenCanvas' in window)||!('createImageBitmap' in window)){
+  throw new Error('Browser ini belum mendukung Worker, OffscreenCanvas, dan createImageBitmap yang diperlukan BiRefNet.');
+ }
  const workerCode = `
 import { BackgroundRemover } from 'https://esm.sh/@katana-video/web-bg-removal@0.1.1?bundle';
 let remover = null;
 self.onmessage = async (event) => {
+ const {file, requestId} = event.data || {};
  let bitmap = null, cutout = null;
  try {
-  if (!remover) remover = await BackgroundRemover.load('birefnet_lite', {
-   backend: 'auto', dtype: 'auto',
-   onProgress: (fraction) => self.postMessage({type:'progress', value:fraction})
-  });
-  bitmap = await createImageBitmap(event.data.file);
+  if (!remover) {
+   remover = await BackgroundRemover.load('birefnet_lite', {
+    backend: 'auto', dtype: 'auto',
+    onProgress: (fraction) => self.postMessage({type:'progress', requestId, value:fraction})
+   });
+  }
+  self.postMessage({type:'stage', requestId, label:'Model siap · menganalisis objek…'});
+  bitmap = await createImageBitmap(file);
   cutout = await remover.removeBackground(bitmap);
   if (cutout.width !== bitmap.width || cutout.height !== bitmap.height) {
    throw new Error('Model mengubah dimensi gambar; hasil dibatalkan.');
   }
   const canvas = new OffscreenCanvas(cutout.width, cutout.height);
-  canvas.getContext('2d').drawImage(cutout, 0, 0);
+  const context = canvas.getContext('2d', {alpha:true});
+  if (!context) throw new Error('Browser tidak dapat membuat kanvas transparan.');
+  context.clearRect(0, 0, cutout.width, cutout.height);
+  context.drawImage(cutout, 0, 0);
   const blob = await canvas.convertToBlob({type:'image/png'});
-  self.postMessage({type:'done', blob, width:cutout.width, height:cutout.height,
+  if (!blob || blob.type !== 'image/png') throw new Error('Browser gagal menghasilkan PNG transparan.');
+  self.postMessage({type:'done', requestId, blob, width:cutout.width, height:cutout.height,
    backend:remover.backend, dtype:remover.dtype});
  } catch (error) {
-  self.postMessage({type:'error', message:error?.message || String(error)});
+  self.postMessage({type:'error', requestId, message:error?.message || String(error)});
  } finally {
   bitmap?.close(); cutout?.close();
  }
 };`;
- const workerUrl=URL.createObjectURL(new Blob([workerCode],{type:'text/javascript'}));
- const worker=new Worker(workerUrl,{type:'module'});
+ birefnetWorkerUrl=URL.createObjectURL(new Blob([workerCode],{type:'text/javascript'}));
+ birefnetWorker=new Worker(birefnetWorkerUrl,{type:'module'});
+ birefnetWorker.onmessage=(event)=>{
+  const data=event.data||{}, pending=birefnetPending.get(data.requestId);
+  if(!pending)return;
+  if(data.type==='progress'){
+   pending.progress(5+Math.round((data.value||0)*68),'Mengunduh model BiRefNet Lite… '+Math.round((data.value||0)*100)+'%');
+  } else if(data.type==='stage'){
+   pending.progress(78,data.label||'Memproses foto…');
+  } else if(data.type==='done'){
+   browserEngineInfo='BiRefNet Lite · '+(data.backend||'GPU')+' · '+(data.dtype||'auto');
+   birefnetPending.delete(data.requestId);
+   pending.resolve(data.blob);
+  } else if(data.type==='error'){
+   birefnetPending.delete(data.requestId);
+   pending.reject(new Error(data.message||'BiRefNet Lite gagal memproses foto.'));
+  }
+ };
+ birefnetWorker.onerror=(event)=>{
+  const error=new Error('Worker BiRefNet gagal: '+(event.message||'periksa dukungan GPU/WebGL dan koneksi model.'));
+  stopBirefnetWorker(error);
+ };
+}
+async function browserRemove(file){
+ ensureBirefnetWorker();
+ const requestId=++birefnetRequestId;
  progress(3,'Menyiapkan BiRefNet Lite…');
  return await new Promise((resolve,reject)=>{
-  let settled=false;
-  const finish=(fn,value)=>{if(settled)return;settled=true;worker.terminate();URL.revokeObjectURL(workerUrl);fn(value)};
-  worker.onmessage=(event)=>{
-   const data=event.data||{};
-   if(data.type==='progress'){
-    progress(5+Math.round((data.value||0)*72),'Mengunduh model BiRefNet Lite… '+Math.round((data.value||0)*100)+'%');
-   } else if(data.type==='done'){
-    browserEngineInfo='BiRefNet Lite · '+(data.backend||'GPU')+' · '+(data.dtype||'auto');
-    finish(resolve,data.blob);
-   } else if(data.type==='error'){
-    finish(reject,new Error(data.message||'BiRefNet Lite gagal memproses foto.'));
-   }
-  };
-  worker.onerror=(event)=>finish(reject,new Error('Worker BiRefNet gagal dijalankan: '+(event.message||'periksa dukungan WebGPU/WebGL dan koneksi model.')));
-  worker.postMessage({file});
+  birefnetPending.set(requestId,{resolve,reject,progress});
+  try{birefnetWorker.postMessage({file,requestId});}
+  catch(error){birefnetPending.delete(requestId);reject(error);}
  });
 }
 async function serverRemove(file){
@@ -118,6 +150,6 @@ async function serverRemove(file){
 $('processBtn').onclick=async()=>{if(!sourceFile)return;const button=$('processBtn');button.disabled=true;$('downloadPng').disabled=true;$('downloadJpg').disabled=true;startedAt=performance.now();resultBlob=null;setStatus('Menyiapkan mesin AI…');progress(2,'Menyiapkan pemrosesan…');try{resultBlob=$('engine').value==='server'?await serverRemove(sourceFile):await browserRemove(sourceFile);if(!resultBlob||resultBlob.type!=='image/png')throw new Error('Hasil harus berupa PNG transparan tanpa kompresi lossy.');const originalBitmap=await createImageBitmap(sourceFile);const outputBitmap=await createImageBitmap(resultBlob);const originalSize=originalBitmap.width+'×'+originalBitmap.height;const outputSize=outputBitmap.width+'×'+outputBitmap.height;originalBitmap.close();outputBitmap.close();if(originalSize!==outputSize)throw new Error('Resolusi hasil ('+outputSize+') berbeda dari foto asli ('+originalSize+'). Unduhan dibatalkan agar foto tidak diperkecil.');if(resultUrl)URL.revokeObjectURL(resultUrl);resultUrl=URL.createObjectURL(resultBlob);$('preview').src=resultUrl;$('preview').style.background=$('bgColor').value;$('downloadPng').disabled=false;$('downloadJpg').disabled=false;progress(100,'Selesai');const seconds=((performance.now()-startedAt)/1000).toFixed(1);$('statusTime').textContent=seconds+' dtk';setStatus('Selesai · '+($('engine').value==='browser'?browserEngineInfo:'Server rembg')+' · resolusi asli ('+originalSize+' px) · PNG lossless',true)}catch(err){console.error(err);setStatus('Gagal: '+(err?.message||String(err)));progress(0,'Coba lagi, atau gunakan server rembg sendiri.')}finally{button.disabled=false}};
 $('downloadPng').onclick=()=>{if(!resultBlob)return;const a=document.createElement('a');a.href=resultUrl;a.download=(sourceFile.name.replace(/\.[^.]+$/,'')||'tryrb')+'-transparent.png';a.click()};
 $('downloadJpg').onclick=async()=>{if(!resultBlob)return;const img=new Image();img.onload=()=>{const c=document.createElement('canvas');c.width=img.naturalWidth;c.height=img.naturalHeight;const ctx=c.getContext('2d');ctx.fillStyle=$('bgColor').value;ctx.fillRect(0,0,c.width,c.height);ctx.drawImage(img,0,0);c.toBlob(blob=>{if(!blob)return;const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=(sourceFile.name.replace(/\.[^.]+$/,'')||'tryrb')+'-background.jpg';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)},'image/jpeg',0.95)};img.src=resultUrl};
-window.addEventListener('beforeunload',()=>{if(sourceUrl)URL.revokeObjectURL(sourceUrl);if(resultUrl)URL.revokeObjectURL(resultUrl)});
+window.addEventListener('beforeunload',()=>{if(sourceUrl)URL.revokeObjectURL(sourceUrl);if(resultUrl)URL.revokeObjectURL(resultUrl);stopBirefnetWorker()});
 </script>
 </body></html>
