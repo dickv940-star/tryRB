@@ -45,7 +45,6 @@ app.add_middleware(
 )
 
 model_sessions = {}
-model_lock = asyncio.Lock()
 inference_lock = asyncio.Semaphore(1)
 
 
