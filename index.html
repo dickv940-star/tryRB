@@ -58,11 +58,10 @@ $('engine').onchange=()=>{$('serverGroup').classList.toggle('hidden',$('engine')
 $('bgColor').oninput=()=>{$('colorName').textContent=$('bgColor').value.toUpperCase();if(resultUrl){$('preview').style.background=$('bgColor').value}};
 document.querySelectorAll('[data-color]').forEach(b=>b.onclick=()=>{$('bgColor').value=b.dataset.color;$('bgColor').dispatchEvent(new Event('input'))});
 let browserEngineInfo='';
-let birefnetWorker=null, birefnetWorkerUrl=null, birefnetRequestId=0;
+let birefnetWorker=null, birefnetRequestId=0;
 const birefnetPending=new Map();
 function stopBirefnetWorker(error){
  if(birefnetWorker){birefnetWorker.terminate();birefnetWorker=null;}
- if(birefnetWorkerUrl){URL.revokeObjectURL(birefnetWorkerUrl);birefnetWorkerUrl=null;}
  for(const pending of birefnetPending.values()) pending.reject(error||new Error('Worker BiRefNet dihentikan.'));
  birefnetPending.clear();
 }
@@ -71,42 +70,7 @@ function ensureBirefnetWorker(){
  if(!('Worker' in window)||!('OffscreenCanvas' in window)||!('createImageBitmap' in window)){
   throw new Error('Browser ini belum mendukung Worker, OffscreenCanvas, dan createImageBitmap yang diperlukan BiRefNet.');
  }
- const workerCode = `
-import { BackgroundRemover } from 'https://esm.sh/@katana-video/web-bg-removal@0.1.1?bundle';
-let remover = null;
-self.onmessage = async (event) => {
- const {file, requestId} = event.data || {};
- let bitmap = null, cutout = null;
- try {
-  if (!remover) {
-   remover = await BackgroundRemover.load('birefnet_lite', {
-    backend: 'auto', dtype: 'auto',
-    onProgress: (fraction) => self.postMessage({type:'progress', requestId, value:fraction})
-   });
-  }
-  self.postMessage({type:'stage', requestId, label:'Model siap · menganalisis objek…'});
-  bitmap = await createImageBitmap(file);
-  cutout = await remover.removeBackground(bitmap);
-  if (cutout.width !== bitmap.width || cutout.height !== bitmap.height) {
-   throw new Error('Model mengubah dimensi gambar; hasil dibatalkan.');
-  }
-  const canvas = new OffscreenCanvas(cutout.width, cutout.height);
-  const context = canvas.getContext('2d', {alpha:true});
-  if (!context) throw new Error('Browser tidak dapat membuat kanvas transparan.');
-  context.clearRect(0, 0, cutout.width, cutout.height);
-  context.drawImage(cutout, 0, 0);
-  const blob = await canvas.convertToBlob({type:'image/png'});
-  if (!blob || blob.type !== 'image/png') throw new Error('Browser gagal menghasilkan PNG transparan.');
-  self.postMessage({type:'done', requestId, blob, width:cutout.width, height:cutout.height,
-   backend:remover.backend, dtype:remover.dtype});
- } catch (error) {
-  self.postMessage({type:'error', requestId, message:error?.message || String(error)});
- } finally {
-  bitmap?.close(); cutout?.close();
- }
-};`;
- birefnetWorkerUrl=URL.createObjectURL(new Blob([workerCode],{type:'text/javascript'}));
- birefnetWorker=new Worker(birefnetWorkerUrl,{type:'module'});
+ birefnetWorker=new Worker(new URL('./birefnet-worker.js',import.meta.url),{type:'module'});
  birefnetWorker.onmessage=(event)=>{
   const data=event.data||{}, pending=birefnetPending.get(data.requestId);
   if(!pending)return;
