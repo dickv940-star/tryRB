@@ -27,7 +27,7 @@ button,input,select{font:inherit}button{cursor:pointer;border:1px solid var(--li
 </section>
 <aside class="side">
  <h3>Pengaturan pemrosesan</h3>
- <div class="group"><label for="engine">Mesin AI</label><select id="engine" class="select"><option value="browser">AI di browser (tanpa API key)</option><option value="server">Server rembg sendiri (opsional)</option></select><div class="hint">Mode browser mengunduh model AI saat pertama kali digunakan.</div></div>
+ <div class="group"><label for="engine">Mesin AI</label><select id="engine" class="select"><option value="browser">BiRefNet Lite · GPU/WebGL (tanpa API key)</option><option value="server">Server rembg sendiri (opsional)</option></select><div class="hint">BiRefNet Lite mengunduh model sekitar 90 MB pada pemakaian pertama, lalu memakai cache browser. Pemrosesan berjalan di worker; WebGPU/WebGL diperlukan.</div></div>
  <div class="group hidden" id="serverGroup"><label for="serverUrl">Alamat API tryRB</label><input id="serverUrl" type="url" placeholder="http://localhost:7000"><div class="hint">Gunakan URL HTTPS untuk backend publik, atau localhost saat frontend dijalankan lokal.</div><label for="serverToken" style="margin-top:12px">Token akses backend</label><input id="serverToken" type="password" autocomplete="off" placeholder="Masukkan token backend" class="select"><div class="hint">Token tidak disimpan oleh aplikasi; hanya digunakan pada permintaan ini.</div>
  <div class="group" style="margin-top:14px"><label for="serverModel">Model server</label><select id="serverModel" class="select"><option value="birefnet-general">BiRefNet General · objek umum</option><option value="birefnet-portrait">BiRefNet Portrait · manusia/rambut</option><option value="bria-rmbg">BRIA RMBG · cek lisensi komersial</option></select></div>
  <label style="display:flex;gap:8px;align-items:center;font-size:12px;margin:12px 0"><input id="decontaminate" type="checkbox" checked> Bersihkan halo warna lama (disarankan)</label>
@@ -38,7 +38,7 @@ button,input,select{font:inherit}button{cursor:pointer;border:1px solid var(--li
  <div class="group"><label for="bgColor">Warna latar pratinjau</label><div class="color-row"><input id="bgColor" type="color" value="#ffffff"><span id="colorName" class="small">#FFFFFF</span></div><div class="swatches"><button class="swatch" data-color="#ffffff" style="background:#fff" aria-label="Putih"></button><button class="swatch" data-color="#e8edf5" style="background:#e8edf5" aria-label="Abu muda"></button><button class="swatch" data-color="#d9e8ff" style="background:#d9e8ff" aria-label="Biru muda"></button><button class="swatch" data-color="#111827" style="background:#111827" aria-label="Gelap"></button><button class="swatch" data-color="#e8d8c5" style="background:#e8d8c5" aria-label="Krem"></button></div></div>
  <div class="actions"><button class="primary" id="processBtn" disabled>Hapus background</button><button id="downloadPng" disabled>Unduh PNG transparan</button><button id="downloadJpg" disabled>Unduh JPG (kompresi lossy)</button><button id="resetBtn" disabled>Ganti foto</button></div>
  <div class="progress" id="progress"><i id="progressBar"></i></div><div class="hint" id="progressLabel"></div>
- <div class="notice">PNG transparan adalah format unduhan utama: dimensi asli dipertahankan dan file PNG tidak memakai kompresi lossy. JPG selalu memakai kompresi lossy; gunakan hanya jika memang membutuhkan JPG. Mode browser cocok untuk uji cepat. Untuk mengurangi halo pada rambut, gunakan server rembg dengan decontamination. ViTMatte dapat membantu detail tepi lembut, tetapi lebih berat dan perlu model tambahan. Hasil tetap perlu diuji pada foto nyata.</div>
+ <div class="notice">PNG transparan adalah format unduhan utama: dimensi asli dipertahankan dan file PNG tidak memakai kompresi lossy. JPG selalu memakai kompresi lossy; gunakan hanya jika memang membutuhkan JPG. Mode browser memakai BiRefNet Lite (MIT) melalui WebGPU/WebGL dan mengunduh model sekitar 90 MB sekali. Jika GPU/WebGL tidak didukung, aplikasi menampilkan kegagalan dan tidak diam-diam kembali ke model IS-Net yang lebih rendah detailnya. Hasil wajib diuji pada foto nyata; tidak ada jaminan setara PhotoRoom.</div>
 </aside>
 </main>
 <input class="file" id="fileInput" type="file" accept="image/png,image/jpeg,image/webp">
@@ -57,9 +57,50 @@ $('dropzone').addEventListener('dragover',e=>{e.preventDefault();$('dropzone').s
 $('engine').onchange=()=>{$('serverGroup').classList.toggle('hidden',$('engine').value!=='server')};
 $('bgColor').oninput=()=>{$('colorName').textContent=$('bgColor').value.toUpperCase();if(resultUrl){$('preview').style.background=$('bgColor').value}};
 document.querySelectorAll('[data-color]').forEach(b=>b.onclick=()=>{$('bgColor').value=b.dataset.color;$('bgColor').dispatchEvent(new Event('input'))});
+let browserEngineInfo='';
+let birefnetWorker=null, birefnetRequestId=0;
+const birefnetPending=new Map();
+function stopBirefnetWorker(error){
+ if(birefnetWorker){birefnetWorker.terminate();birefnetWorker=null;}
+ for(const pending of birefnetPending.values()) pending.reject(error||new Error('Worker BiRefNet dihentikan.'));
+ birefnetPending.clear();
+}
+function ensureBirefnetWorker(){
+ if(birefnetWorker)return;
+ if(!('Worker' in window)||!('OffscreenCanvas' in window)||!('createImageBitmap' in window)){
+  throw new Error('Browser ini belum mendukung Worker, OffscreenCanvas, dan createImageBitmap yang diperlukan BiRefNet.');
+ }
+ birefnetWorker=new Worker(new URL('./birefnet-worker.js',import.meta.url),{type:'module'});
+ birefnetWorker.onmessage=(event)=>{
+  const data=event.data||{}, pending=birefnetPending.get(data.requestId);
+  if(!pending)return;
+  if(data.type==='progress'){
+   pending.progress(5+Math.round((data.value||0)*68),'Mengunduh model BiRefNet Lite… '+Math.round((data.value||0)*100)+'%');
+  } else if(data.type==='stage'){
+   pending.progress(78,data.label||'Memproses foto…');
+  } else if(data.type==='done'){
+   browserEngineInfo='BiRefNet Lite · '+(data.backend||'GPU')+' · '+(data.dtype||'auto');
+   birefnetPending.delete(data.requestId);
+   pending.resolve(data.blob);
+  } else if(data.type==='error'){
+   birefnetPending.delete(data.requestId);
+   pending.reject(new Error(data.message||'BiRefNet Lite gagal memproses foto.'));
+  }
+ };
+ birefnetWorker.onerror=(event)=>{
+  const error=new Error('Worker BiRefNet gagal: '+(event.message||'periksa dukungan GPU/WebGL dan koneksi model.'));
+  stopBirefnetWorker(error);
+ };
+}
 async function browserRemove(file){
- if(!processor){progress(4,'Memuat modul AI…');const mod=await import('https://esm.sh/@imgly/background-removal@1.5.5');processor=mod.removeBackground}
- return await processor(file,{model:'isnet',device:'cpu',output:{format:'image/png',quality:1,type:'foreground'},progress:(key,current,total)=>{if(total)progress(8+Math.round(current/total*82),'Mengunduh model / memproses AI…')}});
+ ensureBirefnetWorker();
+ const requestId=++birefnetRequestId;
+ progress(3,'Menyiapkan BiRefNet Lite…');
+ return await new Promise((resolve,reject)=>{
+  birefnetPending.set(requestId,{resolve,reject,progress});
+  try{birefnetWorker.postMessage({file,requestId});}
+  catch(error){birefnetPending.delete(requestId);reject(error);}
+ });
 }
 async function serverRemove(file){
  const base=$('serverUrl').value.trim().replace(/\/$/,'');if(!base)throw new Error('Masukkan alamat server rembg terlebih dahulu.');
@@ -70,9 +111,9 @@ async function serverRemove(file){
  const response=await fetch(base+'/api/remove',{method:'POST',headers:{Authorization:'Bearer '+token},body});if(!response.ok){const detail=await response.text().catch(()=> '');throw new Error('Backend tryRB HTTP '+response.status+'. '+detail.slice(0,220));}
  progress(90,'Backend menyelesaikan segmentasi dan perbaikan tepi…');return await response.blob();
 }
-$('processBtn').onclick=async()=>{if(!sourceFile)return;const button=$('processBtn');button.disabled=true;$('downloadPng').disabled=true;$('downloadJpg').disabled=true;startedAt=performance.now();resultBlob=null;setStatus('Menyiapkan mesin AI…');progress(2,'Menyiapkan pemrosesan…');try{resultBlob=$('engine').value==='server'?await serverRemove(sourceFile):await browserRemove(sourceFile);if(!resultBlob||resultBlob.type!=='image/png')throw new Error('Hasil harus berupa PNG transparan tanpa kompresi lossy.');const originalBitmap=await createImageBitmap(sourceFile);const outputBitmap=await createImageBitmap(resultBlob);const originalSize=originalBitmap.width+'×'+originalBitmap.height;const outputSize=outputBitmap.width+'×'+outputBitmap.height;originalBitmap.close();outputBitmap.close();if(originalSize!==outputSize)throw new Error('Resolusi hasil ('+outputSize+') berbeda dari foto asli ('+originalSize+'). Unduhan dibatalkan agar foto tidak diperkecil.');if(resultUrl)URL.revokeObjectURL(resultUrl);resultUrl=URL.createObjectURL(resultBlob);$('preview').src=resultUrl;$('preview').style.background=$('bgColor').value;$('downloadPng').disabled=false;$('downloadJpg').disabled=false;progress(100,'Selesai');const seconds=((performance.now()-startedAt)/1000).toFixed(1);$('statusTime').textContent=seconds+' dtk';setStatus('Selesai · resolusi asli dipertahankan ('+originalSize+' px) · PNG lossless',true)}catch(err){console.error(err);setStatus('Gagal: '+(err?.message||String(err)));progress(0,'Coba lagi, atau gunakan server rembg sendiri.')}finally{button.disabled=false}};
+$('processBtn').onclick=async()=>{if(!sourceFile)return;const button=$('processBtn');button.disabled=true;$('downloadPng').disabled=true;$('downloadJpg').disabled=true;startedAt=performance.now();resultBlob=null;setStatus('Menyiapkan mesin AI…');progress(2,'Menyiapkan pemrosesan…');try{resultBlob=$('engine').value==='server'?await serverRemove(sourceFile):await browserRemove(sourceFile);if(!resultBlob||resultBlob.type!=='image/png')throw new Error('Hasil harus berupa PNG transparan tanpa kompresi lossy.');const originalBitmap=await createImageBitmap(sourceFile);const outputBitmap=await createImageBitmap(resultBlob);const originalSize=originalBitmap.width+'×'+originalBitmap.height;const outputSize=outputBitmap.width+'×'+outputBitmap.height;originalBitmap.close();outputBitmap.close();if(originalSize!==outputSize)throw new Error('Resolusi hasil ('+outputSize+') berbeda dari foto asli ('+originalSize+'). Unduhan dibatalkan agar foto tidak diperkecil.');if(resultUrl)URL.revokeObjectURL(resultUrl);resultUrl=URL.createObjectURL(resultBlob);$('preview').src=resultUrl;$('preview').style.background=$('bgColor').value;$('downloadPng').disabled=false;$('downloadJpg').disabled=false;progress(100,'Selesai');const seconds=((performance.now()-startedAt)/1000).toFixed(1);$('statusTime').textContent=seconds+' dtk';setStatus('Selesai · '+($('engine').value==='browser'?browserEngineInfo:'Server rembg')+' · resolusi asli ('+originalSize+' px) · PNG lossless',true)}catch(err){console.error(err);setStatus('Gagal: '+(err?.message||String(err)));progress(0,'Coba lagi, atau gunakan server rembg sendiri.')}finally{button.disabled=false}};
 $('downloadPng').onclick=()=>{if(!resultBlob)return;const a=document.createElement('a');a.href=resultUrl;a.download=(sourceFile.name.replace(/\.[^.]+$/,'')||'tryrb')+'-transparent.png';a.click()};
 $('downloadJpg').onclick=async()=>{if(!resultBlob)return;const img=new Image();img.onload=()=>{const c=document.createElement('canvas');c.width=img.naturalWidth;c.height=img.naturalHeight;const ctx=c.getContext('2d');ctx.fillStyle=$('bgColor').value;ctx.fillRect(0,0,c.width,c.height);ctx.drawImage(img,0,0);c.toBlob(blob=>{if(!blob)return;const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=(sourceFile.name.replace(/\.[^.]+$/,'')||'tryrb')+'-background.jpg';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)},'image/jpeg',0.95)};img.src=resultUrl};
-window.addEventListener('beforeunload',()=>{if(sourceUrl)URL.revokeObjectURL(sourceUrl);if(resultUrl)URL.revokeObjectURL(resultUrl)});
+window.addEventListener('beforeunload',()=>{if(sourceUrl)URL.revokeObjectURL(sourceUrl);if(resultUrl)URL.revokeObjectURL(resultUrl);stopBirefnetWorker()});
 </script>
 </body></html>
