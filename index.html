@@ -56,7 +56,13 @@ $('chooseBtn').onclick=()=>$('fileInput').click();$('fileInput').onchange=e=>{lo
 $('dropzone').addEventListener('dragover',e=>{e.preventDefault();$('dropzone').style.outline='2px dashed #8b9cff'});$('dropzone').addEventListener('dragleave',()=>$('dropzone').style.outline='');$('dropzone').addEventListener('drop',e=>{e.preventDefault();$('dropzone').style.outline='';loadFile(e.dataTransfer.files?.[0])});
 $('engine').onchange=()=>{$('serverGroup').classList.toggle('hidden',$('engine').value!=='server')};
 $('bgColor').oninput=()=>{$('colorName').textContent=$('bgColor').value.toUpperCase();if(resultUrl){$('preview').style.background=$('bgColor').value}};
-document.querySelectorAll('[data-color]').forEach(b=>b.onclick=()=>{$('bgColor').value=b.dataset.color;$('bgColor').dispatchEvent(new Event('input'))});
+function applyBackgroundColor(color){$('bgColor').value=color;$('bgColor').dispatchEvent(new Event('input',{bubbles:true}));}
+document.querySelectorAll('[data-color]').forEach(b=>{
+ const apply=()=>applyBackgroundColor(b.dataset.color);
+ b.addEventListener('pointerenter',apply);
+ b.addEventListener('focus',apply);
+ b.addEventListener('click',apply);
+});
 let browserEngineInfo='';
 let birefnetWorker=null, birefnetRequestId=0;
 const birefnetPending=new Map();
