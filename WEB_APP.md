@@ -2,7 +2,7 @@
 
 ## Frontend
 
-`index.html` is a static browser interface suitable for GitHub Pages. Browser mode uses `@imgly/background-removal` and processes the selected image locally; model assets are downloaded from the IMG.LY CDN. First-run download and inference time depend on the device, browser memory, and network.
+`index.html` is a static browser interface suitable for GitHub Pages. Browser mode first tries BiRefNet Lite through WebGPU/WebGL. If GPU context creation fails, the worker automatically falls back to `@imgly/background-removal` using its ISNet quantized model on CPU/WebAssembly. The fallback runs locally, downloads model/runtime assets from the IMG.LY CDN, and may be slower with different edge detail than BiRefNet. First-run download and inference time depend on device memory, browser support, and network.
 
 ## Authenticated Python backend
 
